@@ -4,7 +4,7 @@
 // Requires: PRIVATE_KEY, SERVER_URL in .env
 
 import 'dotenv/config';
-import { ThoughtProofClient } from '../src/client/index.js';
+import { ThoughtProofClient } from '@thoughtproof/skale-agent/client';
 
 async function main() {
   const client = new ThoughtProofClient({

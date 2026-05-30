@@ -4,7 +4,7 @@
 // Requires: PRIVATE_KEY in .env
 
 import 'dotenv/config';
-import { ERC8004Client } from '../src/erc8004/index.js';
+import { ERC8004Client } from '@thoughtproof/skale-agent/erc8004';
 
 async function main() {
   const erc = new ERC8004Client({
@@ -17,29 +17,7 @@ async function main() {
 
   // Register agent
   console.log('Registering ThoughtProof Verification Agent...');
-  const { agentId, txHash } = await erc.registerAgent({
-    name: 'ThoughtProof Verification Agent',
-    description: 'AI agent verification service — Sentinel pre-execution triage + RV adversarial deep verification. Pay-per-call via x402.',
-    capabilities: [
-      'sentinel-triage',
-      'adversarial-verification',
-      'attestation',
-      'reputation-tracking',
-    ],
-    version: '0.1.0',
-    owner: erc.address,
-    endpoints: {
-      sentinel: 'https://verify.thoughtproof.ai/sentinel',
-      rv: 'https://verify.thoughtproof.ai/verify',
-      status: 'https://verify.thoughtproof.ai/status',
-    },
-    pricing: {
-      sentinel: '$0.003',
-      rvStandard: '$0.02',
-      rvDeep: '$0.08',
-      currency: 'USDC',
-    },
-  });
+  const { agentId, txHash } = await erc.registerAgent('ipfs://QmThoughtProofMetadataHash');
 
   console.log(`Agent ID: ${agentId}`);
   console.log(`TX: ${txHash}`);
@@ -51,7 +29,7 @@ async function main() {
   console.log(`\nRegistered metadata: ${metadata}`);
 
   const agents = await erc.getAgentsByOwner();
-  console.log(`Total agents owned: ${agents.length}`);
+  console.log(`Total agents owned: ${agents}`);
 }
 
 main().catch(console.error);

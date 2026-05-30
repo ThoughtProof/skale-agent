@@ -1,6 +1,9 @@
 // ERC-8004 Agent Registration and Discovery on SKALE
 // Interacts with deployed Identity and Reputation registries
 
+// TODO: migrate from ethers to viem for smaller bundle size (ethers = 15MB)
+// viem is already a peer dependency for x402 integration
+
 import { ethers } from 'ethers';
 import {
   SKALE_BASE_MAINNET,
@@ -9,20 +12,25 @@ import {
 } from '../chains.js';
 import type { AgentMetadata } from '../types.js';
 
-// Minimal ABI for ERC-8004 registries (from SKALE docs)
+// Corrected ABI for ERC-8004 registries (ERC-721 based Identity Registry)
 const IDENTITY_REGISTRY_ABI = [
-  'function registerAgent(bytes32 agentId, string metadataUri) external',
-  'function getAgentMetadata(bytes32 agentId) external view returns (string)',
-  'function getAgentsByOwner(address owner) external view returns (bytes32[])',
-  'function updateMetadata(bytes32 agentId, string newUri) external',
-  'event AgentRegistered(bytes32 indexed agentId, address indexed owner, string metadataUri)',
+  'function register(string agentURI) external returns (uint256)',
+  'function register(string agentURI, tuple(string metadataKey, bytes metadataValue)[] metadata) external returns (uint256)',
+  'function setMetadata(uint256 agentId, string key, bytes value) external',
+  'function getMetadata(uint256 agentId, string key) external view returns (bytes)',
+  'function setAgentURI(uint256 agentId, string newURI) external',
+  'function tokenURI(uint256 tokenId) external view returns (string)',
+  'function balanceOf(address owner) external view returns (uint256)',
+  'function ownerOf(uint256 tokenId) external view returns (address)',
+  'event Registered(uint256 indexed agentId, string agentURI, address indexed owner)',
 ];
 
 const REPUTATION_REGISTRY_ABI = [
-  'function recordInteraction(bytes32 agentId, bool success, uint256 weight) external',
-  'function getReputation(bytes32 agentId) external view returns (uint256 score, uint256 totalInteractions, uint256 successfulInteractions, uint256 lastUpdated)',
-  'function getTopAgents(uint256 limit) external view returns (bytes32[])',
-  'event InteractionRecorded(bytes32 indexed agentId, bool success, uint256 weight)',
+  'function giveFeedback(uint256 agentId, int128 value, uint8 valueDecimals, string tag1, string tag2, string endpoint, string feedbackURI, bytes32 feedbackHash) external',
+  'function revokeFeedback(uint256 agentId, uint64 feedbackIndex) external',
+  'function readFeedback(uint256 agentId, address clientAddress, uint64 feedbackIndex) external view returns (int128 value, uint8 valueDecimals, string tag1, string tag2, bool isRevoked)',
+  'function getLastIndex(uint256 agentId, address clientAddress) external view returns (uint64)',
+  'event NewFeedback(uint256 indexed agentId, address indexed clientAddress, uint64 feedbackIndex, int128 value, uint8 valueDecimals, string indexed indexedTag1, string tag1, string tag2, string endpoint, string feedbackURI, bytes32 feedbackHash)',
 ];
 
 export interface ERC8004Config {
@@ -35,10 +43,11 @@ export interface ERC8004Config {
 }
 
 export interface ReputationData {
-  score: bigint;
-  totalInteractions: bigint;
-  successfulInteractions: bigint;
-  lastUpdated: bigint;
+  value: bigint;
+  valueDecimals: number;
+  tag1: string;
+  tag2: string;
+  isRevoked: boolean;
 }
 
 /**
@@ -49,13 +58,7 @@ export interface ReputationData {
  * import { ERC8004Client } from '@thoughtproof/skale-agent/erc8004';
  *
  * const erc = new ERC8004Client({ privateKey: '0x...' });
- * const agentId = await erc.registerAgent({
- *   name: 'ThoughtProof Sentinel',
- *   description: 'Pre-execution safety triage for AI agents',
- *   capabilities: ['sentinel', 'verification', 'attestation'],
- *   version: '0.1.0',
- *   owner: '0x...',
- * });
+ * const { agentId } = await erc.registerAgent('ipfs://metadata-uri');
  * ```
  */
 export class ERC8004Client {
@@ -89,93 +92,90 @@ export class ERC8004Client {
   }
 
   /**
-   * Generate a deterministic agent ID from a name.
-   * Uses keccak256 hash for cross-chain compatibility.
-   */
-  agentId(name: string): string {
-    return ethers.keccak256(ethers.toUtf8Bytes(name));
-  }
-
-  /**
    * Register a new agent on the ERC-8004 Identity Registry.
-   * Returns the transaction hash and agent ID.
+   * Returns the transaction hash and agent ID (ERC-721 token ID).
    */
-  async registerAgent(
-    metadata: AgentMetadata,
-    metadataUri?: string,
-  ): Promise<{ agentId: string; txHash: string }> {
-    const id = this.agentId(metadata.name);
-
-    // If no URI provided, use a data URI with JSON metadata
-    const uri = metadataUri ?? `data:application/json;base64,${
-      Buffer.from(JSON.stringify(metadata)).toString('base64')
-    }`;
-
-    const tx = await this.identityRegistry.registerAgent(id, uri);
+  async registerAgent(metadataUri: string): Promise<{ agentId: bigint; txHash: string }> {
+    const tx = await this.identityRegistry.register(metadataUri);
     const receipt = await tx.wait();
-
-    return {
-      agentId: id,
-      txHash: receipt.hash,
-    };
+    
+    // Parse the Registered event to get the agentId
+    const event = receipt.logs.find((log: any) => {
+      try {
+        return this.identityRegistry.interface.parseLog(log)?.name === 'Registered';
+      } catch { return false; }
+    });
+    
+    if (!event) {
+      throw new Error('Registered event not found in transaction receipt');
+    }
+    
+    const parsed = this.identityRegistry.interface.parseLog(event);
+    if (!parsed) {
+      throw new Error('Failed to parse Registered event');
+    }
+    return { agentId: parsed.args.agentId, txHash: receipt.hash };
   }
 
   /**
    * Update agent metadata URI.
    */
-  async updateMetadata(agentName: string, metadataUri: string): Promise<string> {
-    const id = this.agentId(agentName);
-    const tx = await this.identityRegistry.updateMetadata(id, metadataUri);
+  async updateMetadata(agentId: bigint, metadataUri: string): Promise<string> {
+    const tx = await this.identityRegistry.setAgentURI(agentId, metadataUri);
     const receipt = await tx.wait();
     return receipt.hash;
   }
 
   /**
-   * Look up an agent's metadata URI by name or ID.
+   * Look up an agent's metadata URI by token ID.
    */
-  async getAgentMetadata(agentNameOrId: string): Promise<string> {
-    const id = agentNameOrId.startsWith('0x') ? agentNameOrId : this.agentId(agentNameOrId);
-    return this.identityRegistry.getAgentMetadata(id) as Promise<string>;
+  async getAgentMetadata(agentId: bigint): Promise<string> {
+    return this.identityRegistry.tokenURI(agentId) as Promise<string>;
   }
 
   /**
-   * Get all agent IDs owned by an address.
+   * Get number of agents owned by an address.
    */
-  async getAgentsByOwner(owner?: string): Promise<string[]> {
+  async getAgentsByOwner(owner?: string): Promise<bigint> {
     const addr = owner ?? this.wallet.address;
-    return this.identityRegistry.getAgentsByOwner(addr) as Promise<string[]>;
+    return this.identityRegistry.balanceOf(addr) as Promise<bigint>;
   }
 
   /**
-   * Record a verification interaction result (reputation feedback).
-   * Typically called after a successful/failed verification.
+   * Give feedback for an agent (reputation data).
+   * Typically called after a verification interaction.
    */
-  async recordInteraction(
-    agentNameOrId: string,
-    success: boolean,
-    weight: number = 100,
+  async giveFeedback(
+    agentId: bigint,
+    value: bigint,
+    valueDecimals: number,
+    tag1: string,
+    tag2: string,
+    endpoint: string,
+    feedbackURI: string,
+    feedbackHash: string,
   ): Promise<string> {
-    const id = agentNameOrId.startsWith('0x') ? agentNameOrId : this.agentId(agentNameOrId);
-    const tx = await this.reputationRegistry.recordInteraction(id, success, weight);
+    const tx = await this.reputationRegistry.giveFeedback(
+      agentId,
+      value,
+      valueDecimals,
+      tag1,
+      tag2,
+      endpoint,
+      feedbackURI,
+      feedbackHash,
+    );
     const receipt = await tx.wait();
     return receipt.hash;
   }
 
   /**
-   * Get reputation data for an agent.
+   * Read feedback for an agent from a specific client.
    */
-  async getReputation(agentNameOrId: string): Promise<ReputationData> {
-    const id = agentNameOrId.startsWith('0x') ? agentNameOrId : this.agentId(agentNameOrId);
-    const [score, totalInteractions, successfulInteractions, lastUpdated] =
-      await this.reputationRegistry.getReputation(id);
-    return { score, totalInteractions, successfulInteractions, lastUpdated };
-  }
-
-  /**
-   * Get top agents by reputation score.
-   */
-  async getTopAgents(limit: number = 10): Promise<string[]> {
-    return this.reputationRegistry.getTopAgents(limit) as Promise<string[]>;
+  async readFeedback(agentId: bigint, clientAddress: string, feedbackIndex: number): Promise<ReputationData> {
+    const [value, valueDecimals, tag1, tag2, isRevoked] =
+      await this.reputationRegistry.readFeedback(agentId, clientAddress, feedbackIndex);
+    return { value, valueDecimals, tag1, tag2, isRevoked };
   }
 
   /**

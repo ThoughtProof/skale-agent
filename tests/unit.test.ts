@@ -125,6 +125,24 @@ describe('createServer', () => {
     expect(body.error).toContain('claim');
   });
 
+  it('POST /verify/deep validates required fields', async () => {
+    const { createServer } = await import('../src/server/server.js');
+    const app = createServer({
+      apiKey: 'test-key',
+      receivingAddress: '0xABCD',
+    });
+
+    const res = await app.fetch(new Request('http://localhost/verify/deep', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }));
+
+    expect(res.status).toBe(400);
+    const body = await res.json() as Record<string, any>;
+    expect(body.error).toContain('claim');
+  });
+
   it('POST /sentinel proxies to backend on valid request', async () => {
     const { createServer } = await import('../src/server/server.js');
     const app = createServer({
@@ -236,7 +254,7 @@ describe('createServer', () => {
 
 // --- buildPaymentRoutes ---
 describe('buildPaymentRoutes', () => {
-  it('returns x402 routes for sentinel and verify', async () => {
+  it('returns x402 routes for sentinel, verify, and verify/deep', async () => {
     const { buildPaymentRoutes } = await import('../src/server/server.js');
     const routes = buildPaymentRoutes({
       apiKey: 'test',
@@ -245,10 +263,12 @@ describe('buildPaymentRoutes', () => {
 
     expect(routes).toHaveProperty('POST /sentinel');
     expect(routes).toHaveProperty('POST /verify');
+    expect(routes).toHaveProperty('POST /verify/deep');
     expect(routes['POST /sentinel'].accepts[0].scheme).toBe('exact');
     expect(routes['POST /sentinel'].accepts[0].payTo).toBe('0xABCD');
     expect(routes['POST /sentinel'].accepts[0].price.amount).toBe('3000');
     expect(routes['POST /verify'].accepts[0].price.amount).toBe('20000');
+    expect(routes['POST /verify/deep'].accepts[0].price.amount).toBe('80000');
   });
 
   it('uses testnet token for testnet network', async () => {
@@ -500,22 +520,6 @@ describe('ThoughtProofClient', () => {
 
 // --- ERC-8004 Client ---
 describe('ERC8004Client', () => {
-  it('generates deterministic agent IDs', async () => {
-    const { ERC8004Client } = await import('../src/erc8004/erc8004.js');
-    const client = new ERC8004Client({
-      privateKey: '0x' + '1'.repeat(64),
-      testnet: true,
-    });
-
-    const id1 = client.agentId('ThoughtProof Verification Agent');
-    const id2 = client.agentId('ThoughtProof Verification Agent');
-    const id3 = client.agentId('Different Agent');
-
-    expect(id1).toBe(id2);
-    expect(id1).not.toBe(id3);
-    expect(id1).toMatch(/^0x[a-f0-9]{64}$/);
-  });
-
   it('exposes wallet address', async () => {
     const { ERC8004Client } = await import('../src/erc8004/erc8004.js');
     const client = new ERC8004Client({

@@ -42,7 +42,8 @@ Endpoints:
 | Path | Method | Price | Description |
 |------|--------|-------|-------------|
 | `/sentinel` | POST | $0.003 | Pre-execution safety triage |
-| `/verify` | POST | $0.02 | Adversarial substance verification |
+| `/verify` | POST | $0.02 | Adversarial substance verification (standard) |
+| `/verify/deep` | POST | $0.08 | Adversarial deep verification |
 | `/status` | GET | Free | Health check |
 | `/discover` | GET | Free | Service discovery with pricing |
 
@@ -78,13 +79,7 @@ const erc = new ERC8004Client({
   testnet: true,
 });
 
-const { agentId, txHash } = await erc.registerAgent({
-  name: 'ThoughtProof Verification Agent',
-  description: 'AI verification — Sentinel triage + RV adversarial deep check',
-  capabilities: ['sentinel-triage', 'adversarial-verification', 'attestation'],
-  version: '0.1.0',
-  owner: erc.address,
-});
+const { agentId, txHash } = await erc.registerAgent('ipfs://QmYourMetadataHash');
 ```
 
 ## Architecture

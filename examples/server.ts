@@ -8,9 +8,9 @@ import { serve } from '@hono/node-server';
 import { paymentMiddleware, x402ResourceServer } from '@x402/hono';
 import { ExactEvmScheme } from '@x402/evm/exact/server';
 import { HTTPFacilitatorClient } from '@x402/core/server';
-import { createServer, buildPaymentRoutes } from '../src/server/index.js';
-import { SKALE_BASE_SEPOLIA, DEFAULT_FACILITATOR_URL } from '../src/chains.js';
-import type { ThoughtProofServerConfig } from '../src/types.js';
+import { createServer, buildPaymentRoutes } from '@thoughtproof/skale-agent/server';
+import { SKALE_BASE_SEPOLIA, DEFAULT_FACILITATOR_URL } from '@thoughtproof/skale-agent';
+import type { ThoughtProofServerConfig } from '@thoughtproof/skale-agent';
 
 const config: ThoughtProofServerConfig = {
   apiKey: process.env.THOUGHTPROOF_API_KEY!,

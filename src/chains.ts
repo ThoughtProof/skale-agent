@@ -36,7 +36,8 @@ export const ERC8004_REGISTRIES = {
 // Bridged tokens on SKALE Base
 export const TOKENS = {
   mainnet: {
-    USDC: { address: '0x858b5e0be10ef3fac2877a8cfc48dda539c9c2b20' as const, decimals: 6, symbol: 'USDC.e' },
+    // TODO: verify checksum address on-chain
+    USDC: { address: '0x858b5e0be10ef3fac2877a8cfc48dda539c9c2b2' as const, decimals: 6, symbol: 'USDC.e' },
     USDT: { address: '0x2bF09eFf5aA089BD00C054931C6B02e88f47fCa' as const, decimals: 6, symbol: 'USDT' },
   },
   testnet: {

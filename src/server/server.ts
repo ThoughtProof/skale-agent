@@ -55,6 +55,48 @@ export function createServer(config: ThoughtProofServerConfig): Hono {
   const rvStandardPrice = config.rvStandardPrice ?? '20000';  // $0.02
   const rvDeepPrice = config.rvDeepPrice ?? '80000';          // $0.08
 
+  // Simple in-memory rate limiter
+  const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+  const RATE_LIMIT = 60; // requests per window
+  const RATE_WINDOW = 60_000; // 1 minute
+
+  function checkRateLimit(ip: string): boolean {
+    const now = Date.now();
+    const entry = rateLimitMap.get(ip);
+    if (!entry || now > entry.resetAt) {
+      rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_WINDOW });
+      return true;
+    }
+    if (entry.count >= RATE_LIMIT) return false;
+    entry.count++;
+    return true;
+  }
+
+  // Rate limiting middleware
+  app.use('/sentinel', async (c, next) => {
+    const ip = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip') ?? 'unknown';
+    if (!checkRateLimit(ip)) {
+      return c.json({ error: 'Rate limit exceeded' }, 429);
+    }
+    await next();
+  });
+  
+  app.use('/verify', async (c, next) => {
+    const ip = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip') ?? 'unknown';
+    if (!checkRateLimit(ip)) {
+      return c.json({ error: 'Rate limit exceeded' }, 429);
+    }
+    await next();
+  });
+
+  app.use('/verify/deep', async (c, next) => {
+    const ip = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip') ?? 'unknown';
+    if (!checkRateLimit(ip)) {
+      return c.json({ error: 'Rate limit exceeded' }, 429);
+    }
+    await next();
+  });
+
   // --- Health endpoint (free, no payment required) ---
   app.get('/status', async (c) => {
     const [sentinelOk, rvOk] = await Promise.all([
@@ -108,7 +150,7 @@ export function createServer(config: ThoughtProofServerConfig): Hono {
 
   // --- Sentinel endpoint ---
   app.post('/sentinel', async (c) => {
-    const body = await c.req.json<SentinelRequest>();
+    const body = await c.req.json() as SentinelRequest;
 
     if (!body.action) {
       return c.json({ error: 'Missing required field: action' }, 400);
@@ -151,14 +193,14 @@ export function createServer(config: ThoughtProofServerConfig): Hono {
   });
 
   // --- RV Verify endpoint ---
-  app.post('/verify', async (c) => {
-    const body = await c.req.json<VerifyRequest>();
+  const handleVerify = async (c: any, forceTier?: 'deep') => {
+    const body = await c.req.json() as VerifyRequest;
 
     if (!body.claim) {
       return c.json({ error: 'Missing required field: claim' }, 400);
     }
 
-    const tier = body.tier ?? 'standard';
+    const tier = forceTier ?? body.tier ?? 'standard';
     const start = Date.now();
 
     const backendResponse = await fetch(`${rvUrl}/verify`, {
@@ -195,7 +237,12 @@ export function createServer(config: ThoughtProofServerConfig): Hono {
     };
 
     return c.json(response);
-  });
+  };
+
+  app.post('/verify', (c) => handleVerify(c));
+
+  // --- RV Deep Verify endpoint ---
+  app.post('/verify/deep', (c) => handleVerify(c, 'deep'));
 
   return app;
 }
@@ -215,6 +262,7 @@ export function buildPaymentRoutes(config: ThoughtProofServerConfig) {
 
   const sentinelPrice = config.sentinelPrice ?? '3000';
   const rvStandardPrice = config.rvStandardPrice ?? '20000';
+  const rvDeepPrice = config.rvDeepPrice ?? '80000';
 
   return {
     'POST /sentinel': {
@@ -242,7 +290,21 @@ export function buildPaymentRoutes(config: ThoughtProofServerConfig) {
           extra: { name: paymentTokenName, version: '1' },
         },
       }],
-      description: 'ThoughtProof RV — adversarial substance verification',
+      description: 'ThoughtProof RV — adversarial substance verification (standard)',
+      mimeType: 'application/json',
+    },
+    'POST /verify/deep': {
+      accepts: [{
+        scheme: 'exact' as const,
+        network,
+        payTo: config.receivingAddress,
+        price: {
+          amount: rvDeepPrice,
+          asset: paymentTokenAddress,
+          extra: { name: paymentTokenName, version: '1' },
+        },
+      }],
+      description: 'ThoughtProof RV — adversarial deep verification',
       mimeType: 'application/json',
     },
   };
@@ -251,13 +313,10 @@ export function buildPaymentRoutes(config: ThoughtProofServerConfig) {
 /** Check backend health */
 async function checkBackend(baseUrl: string, path: string, apiKey: string): Promise<boolean> {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
     const res = await fetch(`${baseUrl}${path}`, {
       headers: { 'Authorization': `Bearer ${apiKey}` },
-      signal: controller.signal,
+      signal: AbortSignal.timeout(5000),
     });
-    clearTimeout(timeout);
     return res.ok;
   } catch {
     return false;

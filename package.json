@@ -1,6 +1,6 @@
 {
   "name": "@thoughtproof/skale-agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "ThoughtProof Verification Agent for SKALE — x402 pay-per-call Sentinel + RV endpoints with ERC-8004 identity & reputation",
   "type": "module",
   "main": "dist/index.js",
@@ -66,10 +66,18 @@
     "viem": ">=2.0.0"
   },
   "peerDependenciesMeta": {
-    "@x402/core": { "optional": true },
-    "@x402/evm": { "optional": true },
-    "@x402/hono": { "optional": true },
-    "viem": { "optional": true }
+    "@x402/core": {
+      "optional": true
+    },
+    "@x402/evm": {
+      "optional": true
+    },
+    "@x402/hono": {
+      "optional": true
+    },
+    "viem": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@x402/core": "^2.14.0",

@@ -168,7 +168,7 @@ export class ThoughtProofClient {
 
   private async handlePayment(
     response: Response,
-    httpClient: { getPaymentRequiredResponse: Function; createPaymentPayload: Function; encodePaymentSignatureHeader: Function },
+    httpClient: any,
     url: string,
     init?: RequestInit,
   ): Promise<Response> {
