@@ -1,0 +1,84 @@
+{
+  "name": "@thoughtproof/skale-agent",
+  "version": "0.1.0",
+  "description": "ThoughtProof Verification Agent for SKALE — x402 pay-per-call Sentinel + RV endpoints with ERC-8004 identity & reputation",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./server": {
+      "import": "./dist/server/index.js",
+      "types": "./dist/server/index.d.ts"
+    },
+    "./client": {
+      "import": "./dist/client/index.js",
+      "types": "./dist/client/index.d.ts"
+    },
+    "./erc8004": {
+      "import": "./dist/erc8004/index.js",
+      "types": "./dist/erc8004/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "thoughtproof",
+    "skale",
+    "verification",
+    "ai-agent",
+    "x402",
+    "erc-8004",
+    "sentinel",
+    "agentic-commerce"
+  ],
+  "author": "ThoughtProof <hello@thoughtproof.ai>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ThoughtProof/skale-agent.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "hono": "^4.7.0",
+    "ethers": "^6.13.0"
+  },
+  "peerDependencies": {
+    "@x402/core": ">=2.0.0",
+    "@x402/evm": ">=2.0.0",
+    "@x402/hono": ">=2.0.0",
+    "viem": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@x402/core": { "optional": true },
+    "@x402/evm": { "optional": true },
+    "@x402/hono": { "optional": true },
+    "viem": { "optional": true }
+  },
+  "devDependencies": {
+    "@x402/core": "^2.14.0",
+    "@x402/evm": "^2.14.0",
+    "@x402/hono": "^2.14.0",
+    "viem": "^2.21.0",
+    "@hono/node-server": "^1.13.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "dotenv": "^16.4.0"
+  }
+}
