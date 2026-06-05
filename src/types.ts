@@ -43,12 +43,88 @@ export interface VerifyResponse {
   latency_ms: number;
 }
 
+/** PLV plan verification */
+export interface PLVRequest {
+  plan_steps?: Array<{
+    action: string;
+    description?: string;
+  }>;
+  trace?: Array<{
+    timestamp: number;
+    action: string;
+    result: string;
+  }>;
+  context?: string;
+}
+
+export interface PLVResponse {
+  verdict: 'ALLOW' | 'BLOCK' | 'UNCERTAIN';
+  confidence: number;
+  analysis: string;
+  risk_factors?: string[];
+  latency_ms: number;
+}
+
+/** Unified verification request */
+export interface UnifiedVerifyRequest {
+  mode?: 'sentinel' | 'rv' | 'plv' | 'combined';
+  
+  // Sentinel fields
+  action?: string;
+  step?: string;
+  parameters?: Record<string, unknown>;
+  risk_threshold?: number;
+  
+  // RV fields
+  claim?: string;
+  tier?: 'standard' | 'deep';
+  domain?: string;
+  
+  // PLV fields
+  plan_steps?: Array<{
+    action: string;
+    description?: string;
+  }>;
+  trace?: Array<{
+    timestamp: number;
+    action: string;
+    result: string;
+  }>;
+  
+  // Common
+  context?: string;
+}
+
+/** Unified verification response */
+export interface UnifiedVerifyResponse {
+  mode: 'sentinel' | 'rv' | 'plv' | 'combined';
+  verdict: 'ALLOW' | 'BLOCK' | 'UNCERTAIN';
+  confidence: number;
+  latency_ms: number;
+  
+  // Mode-specific data
+  sentinel?: SentinelResponse;
+  rv?: VerifyResponse;
+  plv?: PLVResponse;
+  
+  // Combined mode - consolidated results
+  combined?: {
+    primary_reason: string;
+    risk_factors?: string[];
+    all_results: {
+      plv?: PLVResponse;
+      rv?: VerifyResponse;
+    };
+  };
+}
+
 /** Health check */
 export interface StatusResponse {
   status: 'ok' | 'degraded' | 'down';
   version: string;
   sentinel: boolean;
   rv: boolean;
+  plv?: boolean;
   uptime_seconds: number;
 }
 
@@ -60,6 +136,8 @@ export interface ThoughtProofServerConfig {
   sentinelUrl?: string;
   /** RV API backend URL */
   rvUrl?: string;
+  /** PLV API backend URL */
+  plvUrl?: string;
   /** Wallet address to receive x402 payments */
   receivingAddress: `0x${string}`;
   /** SKALE network identifier (eip155:chainId) */
@@ -70,12 +148,10 @@ export interface ThoughtProofServerConfig {
   paymentTokenName?: string;
   /** Facilitator URL for x402 settlement */
   facilitatorUrl?: string;
-  /** Sentinel price in token smallest unit (default: "3000" = $0.003 USDC) */
-  sentinelPrice?: string;
-  /** RV standard price (default: "20000" = $0.02 USDC) */
-  rvStandardPrice?: string;
-  /** RV deep price (default: "80000" = $0.08 USDC) */
-  rvDeepPrice?: string;
+  /** Standard verification price in token smallest unit (default: "20000" = $0.02 USDC) */
+  standardPrice?: string;
+  /** Combined verification price in token smallest unit (default: "60000" = $0.06 USDC) */
+  combinedPrice?: string;
 }
 
 /** Client configuration */

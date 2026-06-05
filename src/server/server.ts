@@ -1,5 +1,5 @@
 // ThoughtProof x402 Verification Server for SKALE
-// Exposes Sentinel + RV behind x402 paywall using Hono
+// Unified /verify endpoint with automatic backend routing (Sentinel/RV/PLV)
 
 import { Hono } from 'hono';
 import {
@@ -10,19 +10,21 @@ import {
 } from '../chains.js';
 import type {
   ThoughtProofServerConfig,
-  SentinelRequest,
+  UnifiedVerifyRequest,
+  UnifiedVerifyResponse,
   SentinelResponse,
-  VerifyRequest,
   VerifyResponse,
+  PLVResponse,
   StatusResponse,
 } from '../types.js';
 
 const DEFAULT_SENTINEL_URL = 'https://sentinel.thoughtproof.ai';
 const DEFAULT_RV_URL = 'https://api.thoughtproof.ai/v1';
+const DEFAULT_PLV_URL = 'https://verify.thoughtproof.ai/v2';
 
 /**
- * Create a ThoughtProof verification server with x402 payment protection.
- *
+ * Create a ThoughtProof verification server with unified /verify endpoint.
+ * 
  * Usage:
  * ```ts
  * import { createServer } from '@thoughtproof/skale-agent/server';
@@ -39,6 +41,7 @@ export function createServer(config: ThoughtProofServerConfig): Hono {
 
   const sentinelUrl = config.sentinelUrl ?? DEFAULT_SENTINEL_URL;
   const rvUrl = config.rvUrl ?? DEFAULT_RV_URL;
+  const plvUrl = config.plvUrl ?? DEFAULT_PLV_URL;
   const network = config.network ?? SKALE_BASE_MAINNET.network;
   const facilitatorUrl = config.facilitatorUrl ?? DEFAULT_FACILITATOR_URL;
 
@@ -50,10 +53,9 @@ export function createServer(config: ThoughtProofServerConfig): Hono {
   const paymentTokenAddress = config.paymentTokenAddress ?? defaultToken as `0x${string}`;
   const paymentTokenName = config.paymentTokenName ?? 'Bridged USDC (SKALE Bridge)';
 
-  // Prices in smallest unit (6 decimals for USDC)
-  const sentinelPrice = config.sentinelPrice ?? '3000';      // $0.003
-  const rvStandardPrice = config.rvStandardPrice ?? '20000';  // $0.02
-  const rvDeepPrice = config.rvDeepPrice ?? '80000';          // $0.08
+  // Unified pricing (single price for any mode, higher for combined)
+  const standardPrice = config.standardPrice ?? '20000';  // $0.02
+  const combinedPrice = config.combinedPrice ?? '60000';  // $0.06
 
   // Simple in-memory rate limiter
   const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
@@ -72,24 +74,8 @@ export function createServer(config: ThoughtProofServerConfig): Hono {
     return true;
   }
 
-  // Rate limiting middleware
-  app.use('/sentinel', async (c, next) => {
-    const ip = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip') ?? 'unknown';
-    if (!checkRateLimit(ip)) {
-      return c.json({ error: 'Rate limit exceeded' }, 429);
-    }
-    await next();
-  });
-  
+  // Rate limiting middleware for verify endpoint
   app.use('/verify', async (c, next) => {
-    const ip = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip') ?? 'unknown';
-    if (!checkRateLimit(ip)) {
-      return c.json({ error: 'Rate limit exceeded' }, 429);
-    }
-    await next();
-  });
-
-  app.use('/verify/deep', async (c, next) => {
     const ip = c.req.header('x-forwarded-for') ?? c.req.header('x-real-ip') ?? 'unknown';
     if (!checkRateLimit(ip)) {
       return c.json({ error: 'Rate limit exceeded' }, 429);
@@ -99,16 +85,18 @@ export function createServer(config: ThoughtProofServerConfig): Hono {
 
   // --- Health endpoint (free, no payment required) ---
   app.get('/status', async (c) => {
-    const [sentinelOk, rvOk] = await Promise.all([
+    const [sentinelOk, rvOk, plvOk] = await Promise.all([
       checkBackend(sentinelUrl, '/sentinel/health', config.apiKey),
       checkBackend(rvUrl, '/health', config.apiKey),
+      checkBackend(plvUrl, '/v2/health', ''), // PLV might not need auth for health
     ]);
 
     const response: StatusResponse = {
-      status: sentinelOk && rvOk ? 'ok' : sentinelOk || rvOk ? 'degraded' : 'down',
-      version: '0.1.0',
+      status: sentinelOk && rvOk && plvOk ? 'ok' : (sentinelOk || rvOk || plvOk) ? 'degraded' : 'down',
+      version: '0.2.0',
       sentinel: sentinelOk,
       rv: rvOk,
+      plv: plvOk,
       uptime_seconds: Math.floor((Date.now() - startTime) / 1000),
     };
     return c.json(response);
@@ -118,22 +106,19 @@ export function createServer(config: ThoughtProofServerConfig): Hono {
   app.get('/discover', (c) => {
     return c.json({
       agent: 'ThoughtProof Verification Agent',
-      version: '0.1.0',
+      version: '0.2.0',
       network,
       endpoints: {
-        sentinel: {
-          path: '/sentinel',
-          method: 'POST',
-          price: sentinelPrice,
-          currency: paymentTokenName,
-          description: 'Pre-execution triage — fast, cheap safety check',
-        },
         verify: {
           path: '/verify',
           method: 'POST',
-          price: { standard: rvStandardPrice, deep: rvDeepPrice },
+          price: {
+            standard: standardPrice,
+            combined: combinedPrice,
+          },
           currency: paymentTokenName,
-          description: 'Adversarial verification — deep substance check',
+          description: 'Unified verification endpoint with automatic routing (Sentinel/RV/PLV)',
+          modes: ['sentinel', 'rv', 'plv', 'combined'],
         },
         status: { path: '/status', method: 'GET', price: 'free' },
         discover: { path: '/discover', method: 'GET', price: 'free' },
@@ -148,108 +133,287 @@ export function createServer(config: ThoughtProofServerConfig): Hono {
     });
   });
 
-  // --- Sentinel endpoint ---
-  app.post('/sentinel', async (c) => {
-    const body = await c.req.json() as SentinelRequest;
-
-    if (!body.action) {
-      return c.json({ error: 'Missing required field: action' }, 400);
-    }
-
+  // --- Unified verification endpoint ---
+  app.post('/verify', async (c) => {
+    const body = await c.req.json() as UnifiedVerifyRequest;
     const start = Date.now();
-    const backendResponse = await fetch(`${sentinelUrl}/sentinel/verify`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify({
-        action: body.action,
-        context: body.context ?? '',
-        parameters: body.parameters ?? {},
-        risk_threshold: body.risk_threshold ?? 0.7,
-      }),
-    });
 
-    if (!backendResponse.ok) {
-      const errText = await backendResponse.text().catch(() => 'Unknown error');
-      return c.json(
-        { error: 'Sentinel backend error', details: errText },
-        backendResponse.status as 500,
-      );
+    // Auto-detect mode if not specified
+    const mode = detectMode(body);
+    
+    try {
+      let response: UnifiedVerifyResponse;
+
+      switch (mode) {
+        case 'sentinel':
+          response = await handleSentinel(body, sentinelUrl, config.apiKey, start);
+          break;
+        case 'rv':
+          response = await handleRV(body, rvUrl, config.apiKey, start);
+          break;
+        case 'plv':
+          response = await handlePLV(body, plvUrl, config.apiKey, start);
+          break;
+        case 'combined':
+          response = await handleCombined(body, plvUrl, rvUrl, config.apiKey, start);
+          break;
+        default:
+          return c.json({ error: `Unsupported mode: ${mode}` }, 400);
+      }
+
+      return c.json(response);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      return c.json({ 
+        error: 'Backend verification failed', 
+        details: errorMessage,
+        mode 
+      }, 500);
     }
-
-    const result = await backendResponse.json() as Record<string, unknown>;
-    const response: SentinelResponse = {
-      verdict: (result.verdict as SentinelResponse['verdict']) ?? 'UNCERTAIN',
-      confidence: (result.confidence as number) ?? 0,
-      risk_score: (result.risk_score as number) ?? 0,
-      reason: (result.reason as string) ?? '',
-      flags: (result.flags as string[]) ?? [],
-      latency_ms: Date.now() - start,
-    };
-
-    return c.json(response);
   });
-
-  // --- RV Verify endpoint ---
-  const handleVerify = async (c: any, forceTier?: 'deep') => {
-    const body = await c.req.json() as VerifyRequest;
-
-    if (!body.claim) {
-      return c.json({ error: 'Missing required field: claim' }, 400);
-    }
-
-    const tier = forceTier ?? body.tier ?? 'standard';
-    const start = Date.now();
-
-    const backendResponse = await fetch(`${rvUrl}/verify`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify({
-        claim: body.claim,
-        context: body.context ?? '',
-        tier,
-        domain: body.domain,
-      }),
-    });
-
-    if (!backendResponse.ok) {
-      const errText = await backendResponse.text().catch(() => 'Unknown error');
-      return c.json(
-        { error: 'RV backend error', details: errText },
-        backendResponse.status as 500,
-      );
-    }
-
-    const result = await backendResponse.json() as Record<string, unknown>;
-    const response: VerifyResponse = {
-      verdict: (result.verdict as VerifyResponse['verdict']) ?? 'UNCERTAIN',
-      confidence: (result.confidence as number) ?? 0,
-      summary: (result.summary as string) ?? '',
-      objections: (result.objections as VerifyResponse['objections']) ?? [],
-      sources: result.sources as string[] | undefined,
-      attestation: result.attestation as VerifyResponse['attestation'] | undefined,
-      latency_ms: Date.now() - start,
-    };
-
-    return c.json(response);
-  };
-
-  app.post('/verify', (c) => handleVerify(c));
-
-  // --- RV Deep Verify endpoint ---
-  app.post('/verify/deep', (c) => handleVerify(c, 'deep'));
 
   return app;
 }
 
 /**
- * Build x402 payment route config for use with @x402/hono paymentMiddleware.
- * Returns the routes object that maps endpoints to their payment requirements.
+ * Auto-detect verification mode based on request payload
+ */
+function detectMode(body: UnifiedVerifyRequest): string {
+  // Explicit mode specified
+  if (body.mode) {
+    return body.mode;
+  }
+
+  // Auto-detection based on fields
+  if (body.action || body.step) {
+    return 'sentinel';
+  }
+  
+  if (body.plan_steps || body.trace) {
+    return 'plv';
+  }
+  
+  // Default to RV
+  return 'rv';
+}
+
+/**
+ * Handle Sentinel verification
+ */
+async function handleSentinel(
+  body: UnifiedVerifyRequest,
+  sentinelUrl: string,
+  apiKey: string,
+  start: number
+): Promise<UnifiedVerifyResponse> {
+  if (!body.action && !body.step) {
+    throw new Error('Missing required field for Sentinel: action or step');
+  }
+
+  const backendResponse = await fetch(`${sentinelUrl}/sentinel/verify`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      action: body.action || body.step,
+      context: body.context ?? '',
+      parameters: body.parameters ?? {},
+      risk_threshold: body.risk_threshold ?? 0.7,
+    }),
+  });
+
+  if (!backendResponse.ok) {
+    const errText = await backendResponse.text().catch(() => 'Unknown error');
+    throw new Error(`Sentinel backend error (${backendResponse.status}): ${errText}`);
+  }
+
+  const result = await backendResponse.json() as Record<string, unknown>;
+  const sentinelData: SentinelResponse = {
+    verdict: (result.verdict as SentinelResponse['verdict']) ?? 'UNCERTAIN',
+    confidence: (result.confidence as number) ?? 0,
+    risk_score: (result.risk_score as number) ?? 0,
+    reason: (result.reason as string) ?? '',
+    flags: (result.flags as string[]) ?? [],
+    latency_ms: Date.now() - start,
+  };
+
+  return {
+    mode: 'sentinel',
+    verdict: sentinelData.verdict,
+    confidence: sentinelData.confidence,
+    latency_ms: Date.now() - start,
+    sentinel: sentinelData,
+  };
+}
+
+/**
+ * Handle RV verification
+ */
+async function handleRV(
+  body: UnifiedVerifyRequest,
+  rvUrl: string,
+  apiKey: string,
+  start: number
+): Promise<UnifiedVerifyResponse> {
+  if (!body.claim) {
+    throw new Error('Missing required field for RV: claim');
+  }
+
+  const tier = body.tier ?? 'standard';
+  
+  const backendResponse = await fetch(`${rvUrl}/check`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiKey,
+    },
+    body: JSON.stringify({
+      claim: body.claim,
+      context: body.context ?? '',
+      tier,
+      domain: body.domain,
+    }),
+  });
+
+  if (!backendResponse.ok) {
+    const errText = await backendResponse.text().catch(() => 'Unknown error');
+    throw new Error(`RV backend error (${backendResponse.status}): ${errText}`);
+  }
+
+  const result = await backendResponse.json() as Record<string, unknown>;
+  const rvData: VerifyResponse = {
+    verdict: (result.verdict as VerifyResponse['verdict']) ?? 'UNCERTAIN',
+    confidence: (result.confidence as number) ?? 0,
+    summary: (result.summary as string) ?? '',
+    objections: (result.objections as VerifyResponse['objections']) ?? [],
+    sources: result.sources as string[] | undefined,
+    attestation: result.attestation as VerifyResponse['attestation'] | undefined,
+    latency_ms: Date.now() - start,
+  };
+
+  return {
+    mode: 'rv',
+    verdict: rvData.verdict,
+    confidence: rvData.confidence,
+    latency_ms: Date.now() - start,
+    rv: rvData,
+  };
+}
+
+/**
+ * Handle PLV verification
+ */
+async function handlePLV(
+  body: UnifiedVerifyRequest,
+  plvUrl: string,
+  apiKey: string,
+  start: number
+): Promise<UnifiedVerifyResponse> {
+  if (!body.plan_steps && !body.trace) {
+    throw new Error('Missing required field for PLV: plan_steps or trace');
+  }
+
+  const backendResponse = await fetch(`${plvUrl}/verify`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      plan_steps: body.plan_steps,
+      trace: body.trace,
+      context: body.context ?? '',
+    }),
+  });
+
+  if (!backendResponse.ok) {
+    const errText = await backendResponse.text().catch(() => 'Unknown error');
+    throw new Error(`PLV backend error (${backendResponse.status}): ${errText}`);
+  }
+
+  const result = await backendResponse.json() as Record<string, unknown>;
+  const plvData: PLVResponse = {
+    verdict: (result.verdict as PLVResponse['verdict']) ?? 'UNCERTAIN',
+    confidence: (result.confidence as number) ?? 0,
+    analysis: (result.analysis as string) ?? '',
+    risk_factors: result.risk_factors as string[] | undefined,
+    latency_ms: Date.now() - start,
+  };
+
+  return {
+    mode: 'plv',
+    verdict: plvData.verdict,
+    confidence: plvData.confidence,
+    latency_ms: Date.now() - start,
+    plv: plvData,
+  };
+}
+
+/**
+ * Handle combined PLV + RV verification
+ */
+async function handleCombined(
+  body: UnifiedVerifyRequest,
+  plvUrl: string,
+  rvUrl: string,
+  apiKey: string,
+  start: number
+): Promise<UnifiedVerifyResponse> {
+  if (!body.claim || (!body.plan_steps && !body.trace)) {
+    throw new Error('Combined mode requires both claim (for RV) and plan_steps/trace (for PLV)');
+  }
+
+  // Run PLV and RV in parallel
+  const [plvResponse, rvResponse] = await Promise.all([
+    handlePLV(body, plvUrl, apiKey, start),
+    handleRV(body, rvUrl, apiKey, start),
+  ]);
+
+  // Merge verdicts: BLOCK > UNCERTAIN > ALLOW
+  const finalVerdict = 
+    (plvResponse.verdict === 'BLOCK' || rvResponse.verdict === 'BLOCK') ? 'BLOCK' :
+    (plvResponse.verdict === 'UNCERTAIN' || rvResponse.verdict === 'UNCERTAIN') ? 'UNCERTAIN' :
+    'ALLOW';
+
+  // Calculate combined confidence (average)
+  const combinedConfidence = (plvResponse.confidence + rvResponse.confidence) / 2;
+
+  // Generate primary reason
+  const primaryReason = 
+    finalVerdict === 'BLOCK' 
+      ? `Verification blocked: ${plvResponse.verdict === 'BLOCK' ? 'Plan analysis failed' : 'Claim verification failed'}`
+      : finalVerdict === 'UNCERTAIN'
+      ? 'Verification uncertain: Mixed results from plan and claim analysis'
+      : 'Verification passed: Both plan and claim analysis successful';
+
+  // Collect risk factors
+  const riskFactors: string[] = [];
+  if (plvResponse.plv?.risk_factors) {
+    riskFactors.push(...plvResponse.plv.risk_factors);
+  }
+  if (rvResponse.rv?.objections) {
+    riskFactors.push(...rvResponse.rv.objections.map(obj => obj.explanation));
+  }
+
+  return {
+    mode: 'combined',
+    verdict: finalVerdict,
+    confidence: combinedConfidence,
+    latency_ms: Date.now() - start,
+    combined: {
+      primary_reason: primaryReason,
+      risk_factors: riskFactors.length > 0 ? riskFactors : undefined,
+      all_results: {
+        plv: plvResponse.plv,
+        rv: rvResponse.rv,
+      },
+    },
+  };
+}
+
+/**
+ * Build x402 payment route config for the unified /verify endpoint.
  */
 export function buildPaymentRoutes(config: ThoughtProofServerConfig) {
   const network = config.network ?? SKALE_BASE_MAINNET.network;
@@ -260,51 +424,25 @@ export function buildPaymentRoutes(config: ThoughtProofServerConfig) {
   const paymentTokenAddress = config.paymentTokenAddress ?? defaultToken as `0x${string}`;
   const paymentTokenName = config.paymentTokenName ?? 'Bridged USDC (SKALE Bridge)';
 
-  const sentinelPrice = config.sentinelPrice ?? '3000';
-  const rvStandardPrice = config.rvStandardPrice ?? '20000';
-  const rvDeepPrice = config.rvDeepPrice ?? '80000';
+  const standardPrice = config.standardPrice ?? '20000';
+  const combinedPrice = config.combinedPrice ?? '60000';
 
+  // For x402 we need to determine price dynamically based on mode
+  // Since we can't easily detect the mode at the x402 middleware level,
+  // we'll set the standard price and handle combined pricing in the application
   return {
-    'POST /sentinel': {
-      accepts: [{
-        scheme: 'exact' as const,
-        network,
-        payTo: config.receivingAddress,
-        price: {
-          amount: sentinelPrice,
-          asset: paymentTokenAddress,
-          extra: { name: paymentTokenName, version: '1' },
-        },
-      }],
-      description: 'ThoughtProof Sentinel — pre-execution safety triage',
-      mimeType: 'application/json',
-    },
     'POST /verify': {
       accepts: [{
         scheme: 'exact' as const,
         network,
         payTo: config.receivingAddress,
         price: {
-          amount: rvStandardPrice,
+          amount: standardPrice, // Most requests will be standard
           asset: paymentTokenAddress,
-          extra: { name: paymentTokenName, version: '1' },
+          extra: { name: paymentTokenName, version: '2' },
         },
       }],
-      description: 'ThoughtProof RV — adversarial substance verification (standard)',
-      mimeType: 'application/json',
-    },
-    'POST /verify/deep': {
-      accepts: [{
-        scheme: 'exact' as const,
-        network,
-        payTo: config.receivingAddress,
-        price: {
-          amount: rvDeepPrice,
-          asset: paymentTokenAddress,
-          extra: { name: paymentTokenName, version: '1' },
-        },
-      }],
-      description: 'ThoughtProof RV — adversarial deep verification',
+      description: 'ThoughtProof Unified Verification — auto-routing to Sentinel/RV/PLV',
       mimeType: 'application/json',
     },
   };
@@ -313,8 +451,18 @@ export function buildPaymentRoutes(config: ThoughtProofServerConfig) {
 /** Check backend health */
 async function checkBackend(baseUrl: string, path: string, apiKey: string): Promise<boolean> {
   try {
+    const headers: Record<string, string> = {};
+    if (apiKey) {
+      // Use different auth headers for different backends
+      if (baseUrl.includes('api.thoughtproof.ai')) {
+        headers['X-API-Key'] = apiKey;
+      } else {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+    }
+
     const res = await fetch(`${baseUrl}${path}`, {
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers,
       signal: AbortSignal.timeout(5000),
     });
     return res.ok;
@@ -323,4 +471,4 @@ async function checkBackend(baseUrl: string, path: string, apiKey: string): Prom
   }
 }
 
-export { DEFAULT_SENTINEL_URL, DEFAULT_RV_URL };
+export { DEFAULT_SENTINEL_URL, DEFAULT_RV_URL, DEFAULT_PLV_URL };

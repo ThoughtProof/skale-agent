@@ -7,6 +7,10 @@ import type {
   SentinelResponse,
   VerifyRequest,
   VerifyResponse,
+  PLVRequest,
+  PLVResponse,
+  UnifiedVerifyRequest,
+  UnifiedVerifyResponse,
   StatusResponse,
 } from '../types.js';
 
@@ -79,14 +83,56 @@ export class ThoughtProofClient {
     }
   }
 
-  /** Sentinel pre-execution triage */
+  /** Sentinel pre-execution triage (legacy - routes to unified endpoint) */
   async sentinel(request: SentinelRequest): Promise<SentinelResponse> {
-    return this.post<SentinelResponse>('/sentinel', request);
+    const unifiedRequest: UnifiedVerifyRequest = {
+      mode: 'sentinel',
+      action: request.action,
+      context: request.context,
+      parameters: request.parameters,
+      risk_threshold: request.risk_threshold,
+    };
+    const response = await this.post<UnifiedVerifyResponse>('/verify', unifiedRequest);
+    if (!response.sentinel) {
+      throw new Error('Expected sentinel response data');
+    }
+    return response.sentinel;
   }
 
-  /** RV adversarial verification */
+  /** RV adversarial verification (legacy - routes to unified endpoint) */
   async verify(request: VerifyRequest): Promise<VerifyResponse> {
-    return this.post<VerifyResponse>('/verify', request);
+    const unifiedRequest: UnifiedVerifyRequest = {
+      mode: 'rv',
+      claim: request.claim,
+      context: request.context,
+      tier: request.tier,
+      domain: request.domain,
+    };
+    const response = await this.post<UnifiedVerifyResponse>('/verify', unifiedRequest);
+    if (!response.rv) {
+      throw new Error('Expected rv response data');
+    }
+    return response.rv;
+  }
+
+  /** PLV plan verification */
+  async plv(request: PLVRequest): Promise<PLVResponse> {
+    const unifiedRequest: UnifiedVerifyRequest = {
+      mode: 'plv',
+      plan_steps: request.plan_steps,
+      trace: request.trace,
+      context: request.context,
+    };
+    const response = await this.post<UnifiedVerifyResponse>('/verify', unifiedRequest);
+    if (!response.plv) {
+      throw new Error('Expected plv response data');
+    }
+    return response.plv;
+  }
+
+  /** Unified verification endpoint */
+  async unifiedVerify(request: UnifiedVerifyRequest): Promise<UnifiedVerifyResponse> {
+    return this.post<UnifiedVerifyResponse>('/verify', request);
   }
 
   /** Health check (free, no payment) */
