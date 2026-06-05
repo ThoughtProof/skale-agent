@@ -88,7 +88,7 @@ export function createServer(config: ThoughtProofServerConfig): Hono {
     const [sentinelOk, rvOk, plvOk] = await Promise.all([
       checkBackend(sentinelUrl, '/sentinel/health', config.apiKey),
       checkBackend(rvUrl, '/health', config.apiKey),
-      checkBackend(plvUrl, '/v2/health', ''), // PLV might not need auth for health
+      checkBackend(plvUrl, '/health', ''), // PLV base is already /v2, health is at /v2/health
     ]);
 
     const response: StatusResponse = {
@@ -206,21 +206,33 @@ async function handleSentinel(
   apiKey: string,
   start: number
 ): Promise<UnifiedVerifyResponse> {
-  if (!body.action && !body.step) {
-    throw new Error('Missing required field for Sentinel: action or step');
+  // Sentinel API expects: claim, evidence, mode (optional: tier)
+  // Auto-derive claim from body.action/step/claim
+  const claim = body.claim || body.action || body.step;
+  if (!claim) {
+    throw new Error('Missing required field for Sentinel: claim, action, or step');
   }
+
+  // Evidence from context or explicit evidence
+  const evidence = body.context || '';
+
+  // Sentinel mode: default to output_synthesis for general checks
+  const sentinelMode = body.mode === 'sentinel' ? 'output_synthesis' : (body.mode || 'output_synthesis');
+  // Map to valid Sentinel modes
+  const validModes = ['handoff', 'plan_revision', 'memory_write', 'output_synthesis', 'trade_execution'];
+  const mode = validModes.includes(sentinelMode) ? sentinelMode : 'output_synthesis';
 
   const backendResponse = await fetch(`${sentinelUrl}/sentinel/verify`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      'X-Sentinel-Key': apiKey,
     },
     body: JSON.stringify({
-      action: body.action || body.step,
-      context: body.context ?? '',
-      parameters: body.parameters ?? {},
-      risk_threshold: body.risk_threshold ?? 0.7,
+      claim,
+      evidence,
+      mode,
+      tier: 'checkpoint', // Use cheap checkpoint tier by default
     }),
   });
 
@@ -233,10 +245,10 @@ async function handleSentinel(
   const sentinelData: SentinelResponse = {
     verdict: (result.verdict as SentinelResponse['verdict']) ?? 'UNCERTAIN',
     confidence: (result.confidence as number) ?? 0,
-    risk_score: (result.risk_score as number) ?? 0,
-    reason: (result.reason as string) ?? '',
-    flags: (result.flags as string[]) ?? [],
-    latency_ms: Date.now() - start,
+    risk_score: 1 - ((result.confidence as number) ?? 0), // Derive risk_score from confidence
+    reason: (result.reasoning as string) ?? '',
+    flags: [],
+    latency_ms: ((result.meta as Record<string, unknown>)?.duration_ms as number) ?? (Date.now() - start),
   };
 
   return {
@@ -315,15 +327,35 @@ async function handlePLV(
     throw new Error('Missing required field for PLV: plan_steps or trace');
   }
 
+  // PLV v2 expects: question, answer, trace, plan_steps with index+criticality
+  const question = body.context || 'Verify agent plan execution';
+  const answer = body.claim || 'Agent completed the plan steps as described';
+  const trace = body.trace 
+    ? JSON.stringify(body.trace) 
+    : (body.plan_steps || []).map((s, i) => `Step ${i}: ${s.action} — ${s.description || ''}`).join('\n');
+
+  // Ensure plan_steps have index and criticality
+  const planSteps = (body.plan_steps || []).map((s, i) => ({
+    index: i,
+    description: s.description || s.action,
+    criticality: 'critical' as const,
+  }));
+
   const backendResponse = await fetch(`${plvUrl}/verify`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      'X-API-Key': apiKey,
     },
     body: JSON.stringify({
-      plan_steps: body.plan_steps,
-      trace: body.trace,
-      context: body.context ?? '',
+      question,
+      answer,
+      trace,
+      plan_steps: planSteps.length > 0 ? planSteps : [{ index: 0, description: 'Verify execution', criticality: 'critical' }],
+      mode: 'faithfulness',
+      tier: 'standard',
+      issue_attestation: false,
+      zero_retention: true,
     }),
   });
 
@@ -454,10 +486,14 @@ async function checkBackend(baseUrl: string, path: string, apiKey: string): Prom
     const headers: Record<string, string> = {};
     if (apiKey) {
       // Use different auth headers for different backends
-      if (baseUrl.includes('api.thoughtproof.ai')) {
+      if (baseUrl.includes('api.thoughtproof.ai') || baseUrl.includes('verify.thoughtproof.ai')) {
         headers['X-API-Key'] = apiKey;
       } else {
         headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+      // Sentinel x402 bypass (Phase 0)
+      if (baseUrl.includes('sentinel.thoughtproof.ai')) {
+        headers['X-Sentinel-Key'] = apiKey;
       }
     }
 

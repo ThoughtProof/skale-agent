@@ -25,6 +25,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "start": "node --import=dotenv/config dist/serve.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",

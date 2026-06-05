@@ -81,7 +81,7 @@ describe('createServer', () => {
       expect.objectContaining({
         method: 'POST',
         headers: expect.objectContaining({
-          'Authorization': 'Bearer test-key',
+          'X-Sentinel-Key': 'test-key',
         }),
       }),
     );
