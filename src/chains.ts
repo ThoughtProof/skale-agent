@@ -37,7 +37,7 @@ export const ERC8004_REGISTRIES = {
 export const TOKENS = {
   mainnet: {
     // TODO: verify checksum address on-chain
-    USDC: { address: '0x858b5e0be10ef3fac2877a8cfc48dda539c9c2b2' as const, decimals: 6, symbol: 'USDC.e' },
+    USDC: { address: '0x85889c8c714505E0c94b30fcfcF64fE3Ac8FCb20' as const, decimals: 6, symbol: 'USDC.e' },
     USDT: { address: '0x2bF09eFf5aA089BD00C054931C6B02e88f47fCa' as const, decimals: 6, symbol: 'USDT' },
   },
   testnet: {
@@ -45,5 +45,5 @@ export const TOKENS = {
   },
 } as const;
 
-// Default facilitator (community, can be replaced)
-export const DEFAULT_FACILITATOR_URL = 'https://facilitator.dirtroad.dev';
+// Default facilitator (Ultravioleta DAO — production, supports SKALE Base)
+export const DEFAULT_FACILITATOR_URL = 'https://facilitator.ultravioletadao.xyz';
